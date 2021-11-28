@@ -8,7 +8,10 @@ struct State {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let _ = set_current_dir("runtime");
+    if cfg!(debug_assertions) {
+        let _ = set_current_dir("runtime");
+    }
+    println!("Proton Launcher CLI:");
 
     let mut state = State {
         current_profile: None,
@@ -24,6 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 match arguments[1] {
                     "login" => {
                         state.current_profile = Some(authenticate()?);
+                        println!("Logged in as: {}", state.current_profile.as_ref().unwrap().username);
                     },
                     _ => (),
                 }
@@ -31,8 +35,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             "game" => {
                 match arguments[1] {
                     "install" => {
+                        println!("Installing...");
                         let installation = parse_installation(arguments[2].to_string())?;
                         install_installation(&installation)?;
+                        println!("Finished!");
                     },
                     "launch" => {
                         let installation = parse_installation(arguments[2].to_string())?;
