@@ -1,8 +1,7 @@
-use std::{env::set_current_dir, error::Error, fs::File, io::{Write, stdin}};
+use std::{env::set_current_dir, error::Error, fs::File, io::{BufReader, Write, stdin}, path::Path};
 
 use authentication::{Profile, authenticate};
 use game::{RunArguments, install_installation, parse_installation, run_installation};
-use serde_json::{Map, Value};
 
 struct State {
     current_profile: Option<Profile>,
@@ -17,6 +16,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut state = State {
         current_profile: None,
     };
+
+    let account_file = Path::new("account.json");
+    if account_file.exists() {
+        let file = File::open(account_file)?;
+        let profile: Profile = serde_json::from_reader(BufReader::new(file))?;
+        state.current_profile = Some(profile);
+    }
 
     loop {
         let mut input = String::new();
@@ -35,14 +41,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         };
 
                         if save_to_file {
-                            let mut map = Map::new();
-                            map.insert("token".into(), Value::String(profile.token.clone()));
-                            map.insert("uuid".into(), Value::String(profile.uuid.clone()));
-                            map.insert("username".into(), Value::String(profile.username.clone()));
-
-                            let json = serde_json::Value::Object(map);
                             let mut file = File::create("account.json")?;
-                            file.write_all(serde_json::to_string(&json)?.as_bytes())?;
+                            file.write_all(serde_json::to_string(&profile)?.as_bytes())?;
                         }
 
                         state.current_profile = Some(profile);

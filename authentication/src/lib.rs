@@ -1,12 +1,14 @@
-use std::{error::Error, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread, time::Duration};
+use std::{error::Error, thread, time::Duration};
 
 use fancy_regex::Regex;
 use reqwest::blocking::{Client, Response};
 use serde_json::Value;
 use web_view::Content;
+use serde::{Serialize, Deserialize};
 
 const CLIENT_ID: &'static str = "00000000402b5328";
 
+#[derive(Serialize, Deserialize)]
 pub struct Profile {
     pub token: String,
     pub uuid: String,
@@ -46,23 +48,18 @@ fn get_authorization_code_webview() -> Result<String, Box<dyn Error>> {
         .visible(false)
         .build()?;
 
-    let web_view_handle = web_view.handle();
-    thread::spawn(move || {
-        let web_view_running = Arc::new(AtomicBool::new(true));
-        while web_view_running.load(Ordering::Relaxed) {
-            let web_view_running_clone = web_view_running.clone();
-            web_view_handle.dispatch(move |web_view| {
-                match web_view.eval("webkit.messageHandlers.external.postMessage(document.URL)") {
-                    Ok(()) => (),
-                    Err(e) => eprintln!("{:?}", e)
-                };
-                web_view_running_clone.store(*web_view.user_data(), Ordering::Relaxed);
-                Ok(())
-            }).unwrap();
-            thread::sleep(Duration::from_millis(250));
+    web_view.handle().dispatch(|web_view| {
+        let mut web_view_running = true;
+        while web_view_running {
+            match web_view.eval("webkit.messageHandlers.external.postMessage(document.URL)") {
+                Ok(()) => (),
+                Err(e) => eprintln!("{:?}", e)
+            };
+            web_view_running = *web_view.user_data();
+            thread::sleep(Duration::from_millis(1))
         }
-    });
-
+        Ok(())
+    })?;
 
     web_view.run()?;
 
@@ -80,22 +77,18 @@ fn get_authorization_code_webview() -> Result<String, Box<dyn Error>> {
         .build()?;
 
     //TODO: update on url update? instead of 4 times per second checking
-    let web_view_handle = web_view.handle();
-    thread::spawn(move || {
-        let web_view_running = Arc::new(AtomicBool::new(true));
-        while web_view_running.load(Ordering::Relaxed) {
-            let web_view_running_clone = web_view_running.clone();
-            web_view_handle.dispatch(move |web_view| {
-                match web_view.eval("webkit.messageHandlers.external.postMessage(document.URL)") {
-                    Ok(()) => (),
-                    Err(e) => eprintln!("{:?}", e)
-                };
-                web_view_running_clone.store(web_view.user_data().is_empty(), Ordering::Relaxed);
-                Ok(())
-            }).unwrap();
-            thread::sleep(Duration::from_millis(250));
+    web_view.handle().dispatch(|web_view| {
+        let mut web_view_running = true;
+        while web_view_running {
+            match web_view.eval("webkit.messageHandlers.external.postMessage(document.URL)") {
+                Ok(()) => (),
+                Err(e) => eprintln!("{:?}", e)
+            };
+            web_view_running = web_view.user_data().is_empty();
+            thread::sleep(Duration::from_millis(1))
         }
-    });
+        Ok(())
+    })?;
     
     let url = web_view.run()?;
     let regex = Regex::new("(?<=\\bcode=)([^&]*)")?;
