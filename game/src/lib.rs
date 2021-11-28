@@ -1,4 +1,4 @@
-use std::{any::Any, error::Error, fs::{File, create_dir_all, read_to_string}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command};
+use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command};
 
 use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, property::Attribute};
 use serde_json::Value;
@@ -42,8 +42,7 @@ pub struct Installation {
     main_class: Option<String>,
     classpath: Vec<String>,
     program_arguments: Vec<String>,
-    assets_path: Option<String>,
-    library_path: Option<String>,
+    java_arguments: Vec<String>,
 }
 
 impl Installation {
@@ -66,26 +65,6 @@ impl Installation {
         }
 
         classpath
-    }
-
-    fn get_assets_path(&self) -> String {
-        if let Some(assets_path_temp) = self.assets_path.clone() {
-            Some(assets_path_temp)
-        } else if let Some(parent) = &self.parent {
-            Some(parent.get_assets_path())
-        } else {
-            None
-        }.unwrap().clone()
-    }
-
-    fn get_library_path(&self) -> String {
-        if let Some(library_path_temp) = self.library_path.clone() {
-            Some(library_path_temp)
-        } else if let Some(parent) = &self.parent {
-            Some(parent.get_library_path())
-        } else {
-            None
-        }.unwrap().clone()
     }
 }
 
@@ -126,14 +105,11 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
         }
     }
 
-    let assets_path = match game_json["assets_path"].as_str() {
-        Some(path) => Some(format!("{}/{}", files_directory, path.to_string())),
-        None => None
-    };
-
-    let mut library_path = None;
-    if let Some(library_path_config) = game_json["library_path"].as_str() {
-        library_path = Some(format!("installation/files/{}/{}", id, library_path_config.to_string()));
+    let mut java_arguments = Vec::new();
+    if let Some(java_arguments_array) = game_json["java_arguments"].as_array() {
+        for argument in java_arguments_array {
+            java_arguments.push(argument.as_str().unwrap().to_string());
+        }
     }
 
     Ok(Installation {
@@ -143,8 +119,7 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
         main_class,
         classpath,
         program_arguments,
-        assets_path,
-        library_path
+        java_arguments,
     })
 }
 
@@ -280,10 +255,34 @@ pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn E
     Ok(())
 }
 
-pub fn run_installation(installation: &Installation) -> Result<(), Box<dyn Error>> {
+pub struct RunArguments {
+    pub token: String,
+    pub uuid: String,
+    pub username: String,
+
+}
+
+pub fn run_installation(installation: &Installation, arguments: RunArguments) -> Result<(), Box<dyn Error>> {
     let mut process = Command::new("java");
 
-    process.arg(format!("-Djava.library.path={}", installation.get_library_path()));
+    let mut special_params: HashMap<&str, String> = HashMap::new();
+    special_params.insert("files", format!("installation/files/{}/", installation.id));
+    special_params.insert("access_token", arguments.token);
+    special_params.insert("uuid", arguments.uuid);
+    special_params.insert("username", arguments.username);
+
+    fn apply_special_params(arguments: &Vec<String>, special_params: &HashMap<&str, String>) -> Vec<String> {
+        arguments.iter().map(|argument| {
+            let mut new_argument = argument.clone();
+            for (special_param, special_value) in special_params {
+                new_argument = new_argument.replace(format!("{{{}}}", special_param).as_str(), special_value);
+            }
+
+            new_argument
+        }).collect()
+    }
+
+    process.args(apply_special_params(&installation.java_arguments, &special_params));
 
     let path_separator = match OS {
         "windows" => ";",
@@ -291,9 +290,8 @@ pub fn run_installation(installation: &Installation) -> Result<(), Box<dyn Error
     };
     process.args(["-cp", installation.get_classpath().join(path_separator).as_str(), installation.get_main_class().as_str()]);
 
-    process.args(&installation.program_arguments);
-    process.args(["--assetsDir", installation.get_assets_path().as_str()]);
-
+    process.args(apply_special_params(&installation.program_arguments, &special_params));
+    
     process.spawn()?;
 
     Ok(())

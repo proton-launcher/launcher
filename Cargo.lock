@@ -335,6 +335,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "game"
+version = "0.1.0"
+dependencies = [
+ "Boa",
+ "reqwest",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
 name = "gc"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -583,16 +593,6 @@ checksum = "bc633605454125dec4b66843673f01c7df2b89479b32e0ed634e43a91cff62a5"
 dependencies = [
  "autocfg",
  "hashbrown",
-]
-
-[[package]]
-name = "installation"
-version = "0.1.0"
-dependencies = [
- "Boa",
- "reqwest",
- "serde_json",
- "zip",
 ]
 
 [[package]]
@@ -859,7 +859,7 @@ name = "proton-launcher"
 version = "0.1.0"
 dependencies = [
  "authentication",
- "installation",
+ "game",
 ]
 
 [[package]]
