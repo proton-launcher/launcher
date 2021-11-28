@@ -26,11 +26,45 @@ impl IntoJson for Response {
 }
 
 fn get_authorization_code_webview() -> Result<String, Box<dyn Error>> {
-    let url = format!("https://login.live.com/oauth20_authorize.srf?client_id={}&redirect_uri={}&response_type={}&scope={}",
+    let url = format!("https://login.live.com/oauth20_authorize.srf?client_id={}&redirect_uri={}&response_type={}&scope={}&state=test",
                       CLIENT_ID,
                       "https://login.live.com/oauth20_desktop.srf",
                       "code",
                       "XboxLive.signin%20offline_access");
+
+    let web_view = web_view::builder()
+        .user_data(true)
+        .content(Content::Url("https://login.live.com/logout.srf"))
+        .invoke_handler(|web_view, arg| {
+            if arg != "https://login.live.com/logout.srf" {
+                *web_view.user_data_mut() = false;
+                web_view.exit();
+            }
+            Ok(())
+        })
+        .debug(false)
+        .visible(false)
+        .build()?;
+
+    let web_view_handle = web_view.handle();
+    thread::spawn(move || {
+        let web_view_running = Arc::new(AtomicBool::new(true));
+        while web_view_running.load(Ordering::Relaxed) {
+            let web_view_running_clone = web_view_running.clone();
+            web_view_handle.dispatch(move |web_view| {
+                match web_view.eval("webkit.messageHandlers.external.postMessage(document.URL)") {
+                    Ok(()) => (),
+                    Err(e) => eprintln!("{:?}", e)
+                };
+                web_view_running_clone.store(*web_view.user_data(), Ordering::Relaxed);
+                Ok(())
+            }).unwrap();
+            thread::sleep(Duration::from_millis(250));
+        }
+    });
+
+
+    web_view.run()?;
 
     let web_view = web_view::builder()
         .user_data("".to_string())
@@ -42,7 +76,7 @@ fn get_authorization_code_webview() -> Result<String, Box<dyn Error>> {
             }
 
             Ok(())
-        }) 
+        })
         .build()?;
 
     //TODO: update on url update? instead of 4 times per second checking
@@ -62,7 +96,7 @@ fn get_authorization_code_webview() -> Result<String, Box<dyn Error>> {
             thread::sleep(Duration::from_millis(250));
         }
     });
-
+    
     let url = web_view.run()?;
     let regex = Regex::new("(?<=\\bcode=)([^&]*)")?;
     let code = regex.captures(url.as_str())?.ok_or("Code not found in url")?[0].to_string();

@@ -1,7 +1,8 @@
-use std::{env::set_current_dir, error::Error, io::stdin};
+use std::{env::set_current_dir, error::Error, fs::File, io::{Write, stdin}};
 
 use authentication::{Profile, authenticate};
 use game::{RunArguments, install_installation, parse_installation, run_installation};
+use serde_json::{Map, Value};
 
 struct State {
     current_profile: Option<Profile>,
@@ -26,7 +27,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             "account" => {
                 match arguments[1] {
                     "login" => {
-                        state.current_profile = Some(authenticate()?);
+                        let profile = authenticate()?;
+                        let save_to_file = if let Some(argument) = arguments.get(2) {
+                            argument == &"save"
+                        } else {
+                            false
+                        };
+
+                        if save_to_file {
+                            let mut map = Map::new();
+                            map.insert("token".into(), Value::String(profile.token.clone()));
+                            map.insert("uuid".into(), Value::String(profile.uuid.clone()));
+                            map.insert("username".into(), Value::String(profile.username.clone()));
+
+                            let json = serde_json::Value::Object(map);
+                            let mut file = File::create("account.json")?;
+                            file.write_all(serde_json::to_string(&json)?.as_bytes())?;
+                        }
+
+                        state.current_profile = Some(profile);
                         println!("Logged in as: {}", state.current_profile.as_ref().unwrap().username);
                     },
                     _ => (),
