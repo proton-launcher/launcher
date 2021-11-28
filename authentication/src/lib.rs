@@ -35,35 +35,6 @@ fn get_authorization_code_webview() -> Result<String, Box<dyn Error>> {
                       "XboxLive.signin%20offline_access");
 
     let web_view = web_view::builder()
-        .user_data(true)
-        .content(Content::Url("https://login.live.com/logout.srf"))
-        .invoke_handler(|web_view, arg| {
-            if arg != "https://login.live.com/logout.srf" {
-                *web_view.user_data_mut() = false;
-                web_view.exit();
-            }
-            Ok(())
-        })
-        .debug(false)
-        .visible(false)
-        .build()?;
-
-    web_view.handle().dispatch(|web_view| {
-        let mut web_view_running = true;
-        while web_view_running {
-            match web_view.eval("webkit.messageHandlers.external.postMessage(document.URL)") {
-                Ok(()) => (),
-                Err(e) => eprintln!("{:?}", e)
-            };
-            web_view_running = *web_view.user_data();
-            thread::sleep(Duration::from_millis(1))
-        }
-        Ok(())
-    })?;
-
-    web_view.run()?;
-
-    let web_view = web_view::builder()
         .user_data("".to_string())
         .content(Content::Url(url))
         .invoke_handler(|web_view, arg| {
@@ -89,8 +60,38 @@ fn get_authorization_code_webview() -> Result<String, Box<dyn Error>> {
         }
         Ok(())
     })?;
-    
+
     let url = web_view.run()?;
+
+    let web_view = web_view::builder()
+        .user_data(true)
+        .content(Content::Url("https://login.live.com/logout.srf"))
+        .invoke_handler(|web_view, arg| {
+            if arg != "https://login.live.com/logout.srf" {
+                *web_view.user_data_mut() = false;
+                web_view.exit();
+            }
+            Ok(())
+        })
+        .debug(false)
+        .visible(false)
+        .build().unwrap();
+    
+    web_view.handle().dispatch(|web_view| {
+        let mut web_view_running = true;
+        while web_view_running {
+            match web_view.eval("webkit.messageHandlers.external.postMessage(document.URL)") {
+                 Ok(()) => (),
+                Err(e) => eprintln!("{:?}", e)
+            };
+            web_view_running = *web_view.user_data();
+             thread::sleep(Duration::from_millis(1))
+         }
+        Ok(())
+    }).unwrap();
+
+    web_view.run().unwrap();
+    
     let regex = Regex::new("(?<=\\bcode=)([^&]*)")?;
     let code = regex.captures(url.as_str())?.ok_or("Code not found in url")?[0].to_string();
 
