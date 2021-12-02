@@ -340,6 +340,7 @@ name = "game"
 version = "0.1.0"
 dependencies = [
  "Boa",
+ "fancy-regex",
  "reqwest",
  "serde_json",
  "zip",

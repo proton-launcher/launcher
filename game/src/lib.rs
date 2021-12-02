@@ -1,6 +1,7 @@
-use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command};
+use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env};
 
 use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, property::Attribute};
+use fancy_regex::Regex;
 use serde_json::Value;
 use zip::ZipArchive;
 
@@ -38,7 +39,7 @@ impl<T: Any, U: Error> IntoResult<JsValue, JsValue> for Result<T, U> {
 pub struct Installation {
     parent: Option<Box<Installation>>,
     id: String,
-    install_script: String,
+    scripts: HashMap<String, String>,
     main_class: Option<String>,
     classpath: Vec<String>,
     program_arguments: Vec<String>,
@@ -56,6 +57,22 @@ impl Installation {
         }.unwrap().clone()
     }
 
+    fn get_scripts(&self) -> HashMap<String, Vec<String>> {
+        let mut scripts = match &self.parent {
+            Some(parent) => parent.get_scripts(),
+            None => HashMap::new()
+        };
+
+        for (hook, script) in &self.scripts {
+            match scripts.get_mut(hook) {
+                Some(scripts) => scripts.push(script.clone()),
+                None => { scripts.insert(hook.clone(), vec![script.clone()]); }
+            };
+        }
+        
+        scripts
+    }
+
     fn get_classpath(&self) -> Vec<String> {
         let mut classpath = Vec::new();
         classpath.append(&mut self.classpath.clone());
@@ -66,6 +83,37 @@ impl Installation {
 
         classpath
     }
+
+    fn get_program_arguments(&self) -> Vec<String> {
+        let mut program_arguments = match &self.parent {
+            Some(parent) => parent.program_arguments.clone(),
+            None => Vec::new()
+        };
+        program_arguments.append(&mut self.program_arguments.clone());
+
+        program_arguments
+    }
+
+    fn get_java_arguments(&self) -> Vec<String> {
+        let mut java_arguments = match &self.parent {
+            Some(parent) => parent.java_arguments.clone(),
+            None => Vec::new()
+        };
+        java_arguments.append(&mut self.java_arguments.clone());
+
+        java_arguments
+    }
+}
+
+fn apply_special_params(arguments: &Vec<String>, special_params: &HashMap<&str, String>) -> Vec<String> {
+    arguments.iter().map(|argument| {
+        let mut new_argument = argument.clone();
+        for (special_param, special_value) in special_params {
+            new_argument = new_argument.replace(format!("{{{}}}", special_param).as_str(), special_value);
+        }
+
+        new_argument
+    }).collect()
 }
 
 pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
@@ -75,13 +123,23 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
     let info_file_json: Value = serde_json::from_reader(BufReader::new(info_file))?;
     let game_json = &info_file_json["game"];
 
-    let mut parent = None;
-    if let Some(parent_config) = game_json["parent"].as_str() {
-        parent = Some(Box::new(parse_installation(parent_config.to_string())?));
-    }
+    let parent = match info_file_json["parent"].as_str() {
+        Some(parent) => Some(Box::new(parse_installation(parent.to_string())?)),
+        None => None
+    };
 
     let id = info_file_json["id"].as_str().ok_or("ID not found")?.to_string();
-    let install_script = read_to_string(format!("{}/{}", files_directory, info_file_json["install_script"].as_str().ok_or("ID not found")?))?;
+
+    let scripts = match info_file_json["scripts"].as_object() {
+        Some(scripts) => {
+            let mut map = HashMap::new();
+            for (key, value) in scripts {
+                map.insert(key.clone(), format!("{}:{}", id, read_to_string(format!("installation/files/{}/{}", id, value.as_str().unwrap())).unwrap()));
+            }
+            map
+        }
+        None => HashMap::new()
+    };
     
     let main_class = match game_json["main_class"].as_str() {
         Some(path) => Some(path.to_string()),
@@ -98,12 +156,17 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
         }
     }
 
+    let mut special_params: HashMap<&str, String> = HashMap::new();
+    special_params.insert("files", format!("installation/files/{}/", id));
+    special_params.insert("root", std::fs::canonicalize(env::current_dir()?)?.to_str().unwrap().to_string());
+
     let mut program_arguments = Vec::new();
     if let Some(program_arguments_array) = game_json["program_arguments"].as_array() {
         for argument in program_arguments_array {
             program_arguments.push(argument.as_str().unwrap().to_string());
         }
     }
+    program_arguments = apply_special_params(&program_arguments, &special_params);
 
     let mut java_arguments = Vec::new();
     if let Some(java_arguments_array) = game_json["java_arguments"].as_array() {
@@ -111,11 +174,12 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
             java_arguments.push(argument.as_str().unwrap().to_string());
         }
     }
+    java_arguments = apply_special_params(&java_arguments, &special_params);
 
     Ok(Installation {
         parent,
         id,
-        install_script,
+        scripts,
         main_class,
         classpath,
         program_arguments,
@@ -234,6 +298,28 @@ fn substring(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Result<Js
     Ok(JsValue::String(JsString::from(string.chars().skip(start as usize).take((end - start) as usize).collect::<String>())))
 }
 
+fn regex_capture(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Result<JsValue, JsValue> {
+    let string = args[0].as_string().unwrap().as_str().to_string();
+    let regex = args[1].as_string().unwrap().as_str().to_string();
+
+    let regex = Regex::new(&regex).unwrap();
+
+    let captures = regex.captures(&string).unwrap().unwrap();
+    let capture = captures.get(1).unwrap();
+
+    Ok(JsValue::String(JsString::from(capture.as_str())))
+}
+
+fn copy_file(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue, JsValue> {
+    let installation = context.global_object().get("installation", context)?.as_string().unwrap().as_str().to_string();
+    let input = format!("installation/files/{}/{}", installation, args[0].as_string().unwrap().as_str());
+    let output = format!("installation/files/{}/{}", installation, args[1].as_string().unwrap().as_str());
+
+    std::fs::copy(input, output).unwrap();
+
+    Ok(JsValue::Null)
+}
+
 pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn Error>> {
     let mut context = Context::new();
 
@@ -243,14 +329,21 @@ pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn E
     context.register_global_function("to_json", 0, to_json).into_result()?;
     context.register_global_function("log", 0, log).into_result()?;
     context.register_global_function("substring", 0, substring).into_result()?;
+    context.register_global_function("regex_capture", 0, regex_capture).into_result()?;
+    context.register_global_function("copy_file", 0, copy_file).into_result()?;
 
-    context.register_global_property("installation", JsValue::String(installation.id.clone().into()), Attribute::all());
     context.register_global_property("os", JsValue::String(OS.into()), Attribute::all());
 
-    match context.eval(installation.install_script.clone()) {
-        Ok(_) => (),
-        Err(error) => return Err(error.display().to_string().into())
-    };
+    if let Some(scripts) = installation.get_scripts().get("install") {
+        for script in scripts {
+            let (id, script) = script.split_once(":").unwrap();
+            context.register_global_property("installation", JsValue::String(JsString::from(id)), Attribute::all());
+            match context.eval(script) {
+                Ok(_) => (),
+                Err(error) => return Err(error.display().to_string().into())
+            };
+        }
+    }
 
     Ok(())
 }
@@ -266,23 +359,11 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments) ->
     let mut process = Command::new("java");
 
     let mut special_params: HashMap<&str, String> = HashMap::new();
-    special_params.insert("files", format!("installation/files/{}/", installation.id));
     special_params.insert("access_token", arguments.token);
     special_params.insert("uuid", arguments.uuid);
     special_params.insert("username", arguments.username);
 
-    fn apply_special_params(arguments: &Vec<String>, special_params: &HashMap<&str, String>) -> Vec<String> {
-        arguments.iter().map(|argument| {
-            let mut new_argument = argument.clone();
-            for (special_param, special_value) in special_params {
-                new_argument = new_argument.replace(format!("{{{}}}", special_param).as_str(), special_value);
-            }
-
-            new_argument
-        }).collect()
-    }
-
-    process.args(apply_special_params(&installation.java_arguments, &special_params));
+    process.args(apply_special_params(&installation.get_java_arguments(), &special_params));
 
     let path_separator = match OS {
         "windows" => ";",
@@ -290,7 +371,7 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments) ->
     };
     process.args(["-cp", installation.get_classpath().join(path_separator).as_str(), installation.get_main_class().as_str()]);
 
-    process.args(apply_special_params(&installation.program_arguments, &special_params));
+    process.args(apply_special_params(&installation.get_program_arguments(), &special_params));
     
     process.spawn()?;
 
