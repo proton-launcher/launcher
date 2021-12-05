@@ -413,9 +413,6 @@ pub struct RunArguments {
 }
 
 pub fn run_installation(installation: &Installation, arguments: RunArguments) -> Result<(), Box<dyn Error>> {
-    let security_manager = include_bytes!("../CustomSecurityManager.class");
-    create_dir_all("proton")?;
-    File::create("proton/CustomSecurityManager.class")?.write_all(security_manager)?;
     let policy_text = {
         let mut builder = String::new();
         for policy in installation.get_policy() {
@@ -439,7 +436,6 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments) ->
     process.arg("-Djava.security.policy==policy.policy");
     //process.arg("-Djava.security.debug=access");
     process.arg("-DLWJGL_DISABLE_XRANDR=true");
-    //process.arg(format!("-Dmain_class={}", installation.get_main_class()));
     process.arg("-Dsecurity_location=security.security");
 
     let path_separator = match OS {
