@@ -1,7 +1,7 @@
 use std::{env::set_current_dir, error::Error, fs::File, io::{BufReader, Write, stdin}, path::Path};
 
 use authentication::{Profile, authenticate};
-use game::{RunArguments, install_installation, parse_installation, run_installation};
+use game::{RunArguments, install_installation, parse_installation, run_installation, download_installation};
 
 struct State {
     current_profile: Option<Profile>,
@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 match arguments[1] {
                     "install" => {
                         println!("Installing...");
+                        download_installation(arguments[2].to_string())?;
                         let installation = parse_installation(arguments[2].to_string())?;
                         install_installation(&installation)?;
                         println!("Finished!");

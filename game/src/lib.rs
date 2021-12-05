@@ -2,6 +2,7 @@ use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_al
 
 use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, property::Attribute};
 use fancy_regex::Regex;
+use reqwest::blocking::Client;
 use serde_json::Value;
 use zip::ZipArchive;
 
@@ -127,6 +128,42 @@ fn apply_special_params(arguments: &Vec<String>, special_params: &HashMap<&str, 
 
         new_argument
     }).collect()
+}
+
+pub fn download_installation(id: String) -> Result<(), Box<dyn  Error>> {
+    let base_url = format!("https://raw.githubusercontent.com/proton-launcher/asset/main/installation/{}", id);
+    let files_url = format!("{}/files", base_url);
+
+    let parent_folder = format!("installation/files/{}", id);
+    let _ = create_dir_all(&parent_folder);
+    
+    let client = Client::new();
+    
+    let files = client.get(files_url).send()?.text()?;
+    let files: Vec<&str> = files.split("\n").collect();
+    for file in files {
+        if file.is_empty() { continue; }
+        let url = format!("{}/{}", base_url, file);
+        let text = client.get(url).send()?.text()?;
+
+        let mut file = File::create(format!("{}/{}", parent_folder, file))?;
+        file.write_all(text.as_bytes())?;
+    }
+    
+    let mut info_json = String::new();
+
+    let mut file = File::open(format!("{}/info.json", parent_folder))?;
+    file.read_to_string(&mut info_json)?;
+
+    let info_json: Value = serde_json::from_str(&info_json)?;
+    match info_json["parent"].as_str() {
+        Some(parent) => {
+            download_installation(parent.to_string())?;
+        },
+        None => (),
+    };
+
+    Ok(())
 }
 
 pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
