@@ -44,6 +44,7 @@ pub struct Installation {
     classpath: Vec<String>,
     program_arguments: Vec<String>,
     java_arguments: Vec<String>,
+    policy: Option<String>,
 }
 
 impl Installation {
@@ -86,7 +87,7 @@ impl Installation {
 
     fn get_program_arguments(&self) -> Vec<String> {
         let mut program_arguments = match &self.parent {
-            Some(parent) => parent.program_arguments.clone(),
+            Some(parent) => parent.get_program_arguments(),
             None => Vec::new()
         };
         program_arguments.append(&mut self.program_arguments.clone());
@@ -96,12 +97,24 @@ impl Installation {
 
     fn get_java_arguments(&self) -> Vec<String> {
         let mut java_arguments = match &self.parent {
-            Some(parent) => parent.java_arguments.clone(),
+            Some(parent) => parent.get_java_arguments(),
             None => Vec::new()
         };
         java_arguments.append(&mut self.java_arguments.clone());
 
         java_arguments
+    }
+
+    fn get_policy(&self) -> Vec<String> {
+        let mut policy = match &self.parent {
+            Some(parent) => parent.get_policy(),
+            None => Vec::new()
+        };
+        if let Some(self_policy) = &self.policy {
+            policy.push(self_policy.clone());
+        }
+
+        policy
     }
 }
 
@@ -157,8 +170,9 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
     }
 
     let mut special_params: HashMap<&str, String> = HashMap::new();
-    special_params.insert("files", format!("installation/files/{}/", id));
+    special_params.insert("files", std::fs::canonicalize(format!("installation/files/{}", id))?.to_str().unwrap().to_string());
     special_params.insert("root", std::fs::canonicalize(env::current_dir()?)?.to_str().unwrap().to_string());
+    special_params.insert("path", env::var("PATH")?);
 
     let mut program_arguments = Vec::new();
     if let Some(program_arguments_array) = game_json["program_arguments"].as_array() {
@@ -176,6 +190,11 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
     }
     java_arguments = apply_special_params(&java_arguments, &special_params);
 
+    let policy = match game_json["policy"].as_str() {
+        Some(path) => Some(apply_special_params(&vec![read_to_string(format!("installation/files/{}/{}", id, path))?], &special_params)[0].clone()),
+        None => None
+    };
+
     Ok(Installation {
         parent,
         id,
@@ -184,6 +203,7 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
         classpath,
         program_arguments,
         java_arguments,
+        policy,
     })
 }
 
@@ -356,6 +376,20 @@ pub struct RunArguments {
 }
 
 pub fn run_installation(installation: &Installation, arguments: RunArguments) -> Result<(), Box<dyn Error>> {
+    let security_manager = include_bytes!("../CustomSecurityManager.class");
+    create_dir_all("proton")?;
+    File::create("proton/CustomSecurityManager.class")?.write_all(security_manager)?;
+    let policy_text = {
+        let mut builder = String::new();
+        for policy in installation.get_policy() {
+            builder.push_str(&policy);
+        }
+
+        builder
+    };
+
+    File::create("policy.policy")?.write_all(policy_text.as_bytes())?;
+
     let mut process = Command::new("java");
 
     let mut special_params: HashMap<&str, String> = HashMap::new();
@@ -364,12 +398,18 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments) ->
     special_params.insert("username", arguments.username);
 
     process.args(apply_special_params(&installation.get_java_arguments(), &special_params));
+    process.arg("-Djava.security.manager");
+    process.arg("-Djava.security.policy==policy.policy");
+    //process.arg("-Djava.security.debug=access");
+    process.arg("-DLWJGL_DISABLE_XRANDR=true");
+    //process.arg(format!("-Dmain_class={}", installation.get_main_class()));
+    process.arg("-Dsecurity_location=security.security");
 
     let path_separator = match OS {
         "windows" => ";",
         _ => ":"
     };
-    process.args(["-cp", installation.get_classpath().join(path_separator).as_str(), installation.get_main_class().as_str()]);
+    process.args(["-cp", &format!(".{}{}", path_separator, installation.get_classpath().join(path_separator).as_str()), &installation.get_main_class()]);
 
     process.args(apply_special_params(&installation.get_program_arguments(), &special_params));
     

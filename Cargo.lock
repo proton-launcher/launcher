@@ -863,7 +863,6 @@ dependencies = [
  "authentication",
  "game",
  "serde_json",
- "settings",
 ]
 
 [[package]]
@@ -1087,10 +1086,6 @@ dependencies = [
  "ryu",
  "serde",
 ]
-
-[[package]]
-name = "settings"
-version = "0.1.0"
 
 [[package]]
 name = "slab"
