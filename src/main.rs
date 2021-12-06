@@ -2,9 +2,11 @@ use std::{env::set_current_dir, error::Error, fs::File, io::{BufReader, Write, s
 
 use authentication::{Profile, authenticate};
 use game::{RunArguments, install_installation, parse_installation, run_installation, download_installation};
+use settings::{SettingManager, initialize_settings, Setting};
 
 struct State {
     current_profile: Option<Profile>,
+    setting_manager: SettingManager,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -15,6 +17,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut state = State {
         current_profile: None,
+        setting_manager: initialize_settings()?,
     };
 
     let account_file = Path::new("account.json");
@@ -72,6 +75,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                     _ => (),
                 }
             },
+            "settings" => {
+                let setting_manager = &mut state.setting_manager;
+                match arguments[1] {
+                    "set" => {
+                        let id = arguments[2].to_string();
+                        let value = arguments[3];
+                        if value.eq("true") {
+                            setting_manager.set_setting(id, Setting::Boolean(true));
+                        } else if value.eq("false") {
+                            setting_manager.set_setting(id, Setting::Boolean(false))
+                        } else if value.contains(",") {
+                            setting_manager.set_setting(id, Setting::StringArray(value.split(",").filter(|value| !value.is_empty()).map(|value| value.to_string()).collect()))
+                        }
+                    },
+                    _ => (),
+                }
+
+                setting_manager.save()?;
+            }
             _ => (),
         }
     }

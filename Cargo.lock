@@ -863,6 +863,7 @@ dependencies = [
  "authentication",
  "game",
  "serde_json",
+ "settings",
 ]
 
 [[package]]
@@ -1085,6 +1086,13 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "settings"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
