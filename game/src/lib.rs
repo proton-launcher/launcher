@@ -40,12 +40,13 @@ impl<T: Any, U: Error> IntoResult<JsValue, JsValue> for Result<T, U> {
 pub struct Installation {
     parent: Option<Box<Installation>>,
     id: String,
-    scripts: HashMap<String, String>,
+    install_script: Option<String>,
+    pre_launch_script: Option<String>,
     main_class: Option<String>,
     classpath: Vec<String>,
     program_arguments: Vec<String>,
     java_arguments: Vec<String>,
-    policy: Option<String>,
+    policies: Vec<String>,
 }
 
 impl Installation {
@@ -59,20 +60,12 @@ impl Installation {
         }.unwrap().clone()
     }
 
-    fn get_scripts(&self) -> HashMap<String, Vec<String>> {
-        let mut scripts = match &self.parent {
-            Some(parent) => parent.get_scripts(),
-            None => HashMap::new()
-        };
+    fn get_install_script(&self) -> &Option<String> {
+        &self.install_script
+    }
 
-        for (hook, script) in &self.scripts {
-            match scripts.get_mut(hook) {
-                Some(scripts) => scripts.push(script.clone()),
-                None => { scripts.insert(hook.clone(), vec![script.clone()]); }
-            };
-        }
-        
-        scripts
+    fn get_pre_launch_script(&self) -> &Option<String> {
+        &self.pre_launch_script
     }
 
     fn get_classpath(&self) -> Vec<String> {
@@ -106,16 +99,22 @@ impl Installation {
         java_arguments
     }
 
-    fn get_policy(&self) -> Vec<String> {
-        let mut policy = match &self.parent {
-            Some(parent) => parent.get_policy(),
+    fn get_policies(&self) -> Result<Vec<String>, Box<dyn Error>> {
+        let mut policies = match &self.parent {
+            Some(parent) => parent.get_policies()?,
             None => Vec::new()
         };
-        if let Some(self_policy) = &self.policy {
-            policy.push(self_policy.clone());
-        }
 
-        policy
+        let mut special_params: HashMap<&str, String> = HashMap::new();
+        special_params.insert("files", std::fs::canonicalize(format!("installation/files/{}", self.id))?.to_str().unwrap().to_string());
+        special_params.insert("root", std::fs::canonicalize(env::current_dir()?)?.to_str().unwrap().to_string());
+        special_params.insert("path", env::var("PATH")?);
+
+        policies.append(&mut self.policies.iter().map(|policy| {
+            apply_special_params(&vec![read_to_string(format!("installation/files/{}/{}", self.id, policy)).unwrap()], &special_params)[0].clone()
+        }).collect());
+
+        Ok(policies)
     }
 }
 
@@ -180,15 +179,14 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
 
     let id = info_file_json["id"].as_str().ok_or("ID not found")?.to_string();
 
-    let scripts = match info_file_json["scripts"].as_object() {
-        Some(scripts) => {
-            let mut map = HashMap::new();
-            for (key, value) in scripts {
-                map.insert(key.clone(), format!("{}:{}", id, read_to_string(format!("installation/files/{}/{}", id, value.as_str().unwrap())).unwrap()));
-            }
-            map
-        }
-        None => HashMap::new()
+    let install_script = match game_json["install_script"].as_str() {
+        Some(install_script) => Some(read_to_string(format!("{}/{}", files_directory, install_script.to_string()))?),
+        None => None,
+    };
+
+    let pre_launch_script = match game_json["pre_launch_script"].as_str() {
+        Some(pre_launch_script) => Some(read_to_string(format!("{}/{}", files_directory, pre_launch_script.to_string()))?),
+        None => None,
     };
     
     let main_class = match game_json["main_class"].as_str() {
@@ -227,20 +225,23 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
     }
     java_arguments = apply_special_params(&java_arguments, &special_params);
 
-    let policy = match game_json["policy"].as_str() {
-        Some(path) => Some(apply_special_params(&vec![read_to_string(format!("installation/files/{}/{}", id, path))?], &special_params)[0].clone()),
-        None => None
+    let policies = match game_json["policies"].as_array() {
+        Some(policies) => policies.iter().map(|policy_file| {
+            policy_file.as_str().unwrap().to_string()
+        }).collect(),
+        None => Vec::new()
     };
 
     Ok(Installation {
         parent,
         id,
-        scripts,
+        install_script,
+        pre_launch_script,
         main_class,
         classpath,
         program_arguments,
         java_arguments,
-        policy,
+        policies,
     })
 }
 
@@ -313,6 +314,15 @@ fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue,
     Ok(JsValue::String(JsString::from(string)))
 }
 
+fn write(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue, JsValue> {
+    let installation = context.global_object().get("installation", context)?.as_string().unwrap().as_str().to_string();
+    let file = format!("installation/files/{}/{}", installation, args[0].as_string().unwrap().as_str().to_string());
+    let text = args[1].as_string().unwrap().as_str().to_string();
+    File::create(file).unwrap().write_all(text.as_bytes()).into_result()?;
+
+    Ok(JsValue::Null)
+}
+
 fn to_json(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue, JsValue> {
     let string = args[0].as_string().unwrap().as_str().to_string();
     let json: Value = serde_json::from_str(&string).unwrap();
@@ -355,6 +365,13 @@ fn substring(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Result<Js
     Ok(JsValue::String(JsString::from(string.chars().skip(start as usize).take((end - start) as usize).collect::<String>())))
 }
 
+fn append(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Result<JsValue, JsValue> {
+    let string = args[0].as_string().unwrap().as_str().to_string();
+    let added_string = args[1].as_string().unwrap().as_str().to_string();
+
+    Ok(JsValue::String(JsString::from(format!("{}{}", string, added_string))))
+}
+
 fn regex_capture(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Result<JsValue, JsValue> {
     let string = args[0].as_string().unwrap().as_str().to_string();
     let regex = args[1].as_string().unwrap().as_str().to_string();
@@ -389,17 +406,18 @@ pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn E
     context.register_global_function("regex_capture", 0, regex_capture).into_result()?;
     context.register_global_function("copy_file", 0, copy_file).into_result()?;
 
+    context.register_global_property("installation", JsValue::String(JsString::from(installation.id.as_str())), Attribute::all());
     context.register_global_property("os", JsValue::String(OS.into()), Attribute::all());
 
-    if let Some(scripts) = installation.get_scripts().get("install") {
-        for script in scripts {
-            let (id, script) = script.split_once(":").unwrap();
-            context.register_global_property("installation", JsValue::String(JsString::from(id)), Attribute::all());
-            match context.eval(script) {
-                Ok(_) => (),
-                Err(error) => return Err(error.display().to_string().into())
-            };
-        }
+    if let Some(script) = installation.get_install_script() {
+        match context.eval(script) {
+            Ok(_) => (),
+            Err(error) => return Err(error.display().to_string().into())
+        };
+    }
+
+    if let Some(parent) = &installation.parent {
+        install_installation(parent)?;
     }
 
     Ok(())
@@ -412,10 +430,45 @@ pub struct RunArguments {
 
 }
 
+pub fn run_pre_launch_script(installation: &Installation) -> Result<(), Box<dyn Error>> {
+    let mut context = Context::new();
+
+    //TODO: make all things use the same context setup
+    context.register_global_function("download", 0, download).into_result()?;
+    context.register_global_function("extract", 0, extract).into_result()?;
+    context.register_global_function("read", 0, read).into_result()?;
+    context.register_global_function("write", 0, write).into_result()?;
+    context.register_global_function("to_json", 0, to_json).into_result()?;
+    context.register_global_function("log", 0, log).into_result()?;
+    context.register_global_function("substring", 0, substring).into_result()?;
+    context.register_global_function("append", 0, append).into_result()?;
+    context.register_global_function("regex_capture", 0, regex_capture).into_result()?;
+    context.register_global_function("copy_file", 0, copy_file).into_result()?;
+
+    context.register_global_property("installation", JsValue::String(JsString::from(installation.id.as_str())), Attribute::all());
+    context.register_global_property("os", JsValue::String(OS.into()), Attribute::all());
+
+    if let Some(script) = installation.get_pre_launch_script() {
+        match context.eval(script) {
+            Ok(_) => (),
+            Err(error) => return Err(error.display().to_string().into())
+        };
+    }
+
+    if let Some(parent) = &installation.parent {
+        install_installation(parent)?;
+    }
+
+    Ok(())
+}
+
 pub fn run_installation(installation: &Installation, arguments: RunArguments) -> Result<(), Box<dyn Error>> {
+    run_pre_launch_script(installation)?;
+
     let policy_text = {
         let mut builder = String::new();
-        for policy in installation.get_policy() {
+        for policy in installation.get_policies()? {
+            println!("{}", policy);
             builder.push_str(&policy);
         }
 
