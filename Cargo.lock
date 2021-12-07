@@ -343,6 +343,7 @@ dependencies = [
  "fancy-regex",
  "reqwest",
  "serde_json",
+ "settings",
  "zip",
 ]
 

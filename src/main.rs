@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             token: profile.token.clone(),
                             uuid: profile.uuid.clone(),
                             username: profile.username.clone(),
-                        })?;
+                        }, &state.setting_manager)?;
                     },
                     _ => (),
                 }

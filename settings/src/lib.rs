@@ -16,6 +16,9 @@ impl SettingManager {
     pub fn get_setting(&self, id: String) -> Option<&Setting> {
         self.settings.get(&id)
     }
+    pub fn get_settings(&self) -> &HashMap<String, Setting> {
+        &self.settings
+    }
     pub fn set_setting(&mut self, id: String, setting: Setting) {
         self.settings.insert(id, setting);
     }

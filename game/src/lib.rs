@@ -4,6 +4,7 @@ use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, prop
 use fancy_regex::Regex;
 use reqwest::blocking::Client;
 use serde_json::Value;
+use settings::{SettingManager, Setting};
 use zip::ZipArchive;
 
 const OS: &'static str = if cfg!(windows) {
@@ -351,7 +352,11 @@ fn to_js_json_internal(json: Value, context: &mut Context) -> Result<JsValue, Js
 }
 
 fn log(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Result<JsValue, JsValue> {
-    let log = args[0].as_string().unwrap().as_str().to_string();
+    let log = match &args[0] {
+        JsValue::String(string) => string.as_str().to_string(),
+        JsValue::Boolean(boolean) => if *boolean { "true" } else { "false" }.to_string(),
+        _ => "unsupported value!".to_string(),
+    };
     println!("{}", log);
 
     Ok(JsValue::Null)
@@ -430,7 +435,21 @@ pub struct RunArguments {
 
 }
 
-pub fn run_pre_launch_script(installation: &Installation) -> Result<(), Box<dyn Error>> {
+fn get_settings_value(settings: &SettingManager, context: &mut Context) -> Result<JsValue, Box<dyn Error>> {
+    let object = JsObject::new(Object::new());
+
+    for (id, value) in settings.get_settings() {
+        object.set(id.as_str(), match value {
+            Setting::Boolean(value) => JsValue::Boolean(*value),
+            Setting::StringArray(array) => JsValue::String(array.join(",").into()),
+            Setting::Null => JsValue::Null,
+        }, false, context).unwrap();
+    }
+
+    Ok(JsValue::Object(object))
+}
+
+fn run_pre_launch_script(installation: &Installation, settings: &SettingManager) -> Result<(), Box<dyn Error>> {
     let mut context = Context::new();
 
     //TODO: make all things use the same context setup
@@ -447,6 +466,8 @@ pub fn run_pre_launch_script(installation: &Installation) -> Result<(), Box<dyn 
 
     context.register_global_property("installation", JsValue::String(JsString::from(installation.id.as_str())), Attribute::all());
     context.register_global_property("os", JsValue::String(OS.into()), Attribute::all());
+    let settings_value = get_settings_value(settings, &mut context)?;
+    context.register_global_property("settings", settings_value, Attribute::all());
 
     if let Some(script) = installation.get_pre_launch_script() {
         match context.eval(script) {
@@ -462,13 +483,12 @@ pub fn run_pre_launch_script(installation: &Installation) -> Result<(), Box<dyn 
     Ok(())
 }
 
-pub fn run_installation(installation: &Installation, arguments: RunArguments) -> Result<(), Box<dyn Error>> {
-    run_pre_launch_script(installation)?;
+pub fn run_installation(installation: &Installation, arguments: RunArguments, settings: &SettingManager) -> Result<(), Box<dyn Error>> {
+    run_pre_launch_script(installation, settings)?;
 
     let policy_text = {
         let mut builder = String::new();
         for policy in installation.get_policies()? {
-            println!("{}", policy);
             builder.push_str(&policy);
         }
 
