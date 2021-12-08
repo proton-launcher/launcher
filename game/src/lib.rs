@@ -441,6 +441,7 @@ fn get_settings_value(settings: &SettingManager, context: &mut Context) -> Resul
     for (id, value) in settings.get_settings() {
         object.set(id.as_str(), match value {
             Setting::Boolean(value) => JsValue::Boolean(*value),
+            Setting::Integer(integer) => JsValue::Integer(*integer),
             Setting::StringArray(array) => JsValue::String(array.join(",").into()),
             Setting::Null => JsValue::Null,
         }, false, context).unwrap();
@@ -477,7 +478,7 @@ fn run_pre_launch_script(installation: &Installation, settings: &SettingManager)
     }
 
     if let Some(parent) = &installation.parent {
-        install_installation(parent)?;
+        run_pre_launch_script(parent, settings)?;
     }
 
     Ok(())

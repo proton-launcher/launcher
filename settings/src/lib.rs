@@ -1,9 +1,10 @@
 use std::{collections::HashMap, error::Error, fs::File, io::{Read, Write}};
 
-use serde_json::{Value, Map};
+use serde_json::{Value, Map, Number};
 
 pub enum Setting {
     Boolean(bool),
+    Integer(i32),
     StringArray(Vec<String>),
     Null,
 }
@@ -16,11 +17,11 @@ impl SettingManager {
     pub fn get_setting(&self, id: String) -> Option<&Setting> {
         self.settings.get(&id)
     }
+    pub fn get_setting_mut(&mut self, id: String) -> Option<&mut Setting> {
+        self.settings.get_mut(&id)
+    }
     pub fn get_settings(&self) -> &HashMap<String, Setting> {
         &self.settings
-    }
-    pub fn set_setting(&mut self, id: String, setting: Setting) {
-        self.settings.insert(id, setting);
     }
     pub fn save(&self) -> Result<(), Box<dyn Error>>{
         let mut file = File::create("launcher_settings.json")?;
@@ -29,6 +30,7 @@ impl SettingManager {
         for (id, value) in &self.settings {
             map.insert(id.clone(), match value {
                 Setting::Boolean(value) => Value::Bool(*value),
+                Setting::Integer(integer) => Value::Number(Number::from(*integer)),
                 Setting::StringArray(strings) => {
                     Value::Array(strings.iter().map(|string| {
                         Value::String(string.clone())
@@ -49,6 +51,13 @@ impl SettingManager {
 pub fn initialize_settings() -> Result<SettingManager, Box<dyn Error>> {
     let mut settings = HashMap::new();
 
+    let default_settings = {
+        let mut map = HashMap::new();
+        map.insert("memory".to_string(), Setting::Integer(1024));
+
+        map
+    };
+
     let file = File::open("launcher_settings.json").ok();
     if let Some(mut file) = file {
         let mut contents = String::new();
@@ -57,6 +66,13 @@ pub fn initialize_settings() -> Result<SettingManager, Box<dyn Error>> {
         for (id, value) in json_contents.as_object().unwrap() {
             settings.insert(id.clone(), match value {
                 Value::Bool(value) => Setting::Boolean(*value),
+                Value::Number(number) => {
+                    if number.is_i64() {
+                        Setting::Integer(number.as_i64().unwrap() as i32)
+                    } else {
+                        Setting::Null
+                    }
+                },
                 Value::Array(array) => {
                     Setting::StringArray(array.iter().map(|value| {
                         value.as_str().unwrap().to_string()
@@ -64,6 +80,12 @@ pub fn initialize_settings() -> Result<SettingManager, Box<dyn Error>> {
                 }
                 _ => Setting::Null,
             });
+        }
+    }
+
+    for (id, value) in default_settings {
+        if !settings.contains_key(&id) {
+            settings.insert(id.clone(), value);
         }
     }
 

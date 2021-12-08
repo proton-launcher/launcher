@@ -80,14 +80,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 match arguments[1] {
                     "set" => {
                         let id = arguments[2].to_string();
-                        let value = arguments[3];
-                        if value.eq("true") {
-                            setting_manager.set_setting(id, Setting::Boolean(true));
-                        } else if value.eq("false") {
-                            setting_manager.set_setting(id, Setting::Boolean(false))
-                        } else if value.contains(",") {
-                            setting_manager.set_setting(id, Setting::StringArray(value.split(",").filter(|value| !value.is_empty()).map(|value| value.to_string()).collect()))
-                        }
+                        let wanted = arguments[3];
+                        match setting_manager.get_setting_mut(id.clone()).ok_or(format!("Nonexistent setting: {}", id))? {
+                            Setting::Boolean(value) => *value = wanted.parse::<bool>()?,
+                            Setting::Integer(value) => *value = wanted.parse::<i32>()?,
+                            Setting::StringArray(array) => *array = wanted.split(",").filter(|value| !value.is_empty()).map(|value| value.to_string()).collect(),
+                            Setting::Null => return Err("idk what just happened".into()),
+                        };
                     },
                     _ => (),
                 }
