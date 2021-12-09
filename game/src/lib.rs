@@ -257,6 +257,14 @@ fn append(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Result<JsVal
     Ok(JsValue::String(JsString::from(format!("{}{}", string, added_string))))
 }
 
+fn replace(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Result<JsValue, JsValue> {
+    let string = args[0].as_string().unwrap();
+    let initial = args[1].as_string().unwrap().as_str().to_string();
+    let wanted = args[2].as_string().unwrap().as_str().to_string();
+
+    Ok(JsValue::String(JsString::from(string.replace(initial.as_str(), wanted.as_str()))))
+}
+
 fn regex_capture(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Result<JsValue, JsValue> {
     let string = args[0].as_string().unwrap().as_str().to_string();
     let regex = args[1].as_string().unwrap().as_str().to_string();
@@ -425,6 +433,7 @@ fn run_launch_script(installation: &Installation, settings: &SettingManager) -> 
             context.register_global_function("log", 0, log).into_result()?;
             context.register_global_function("substring", 0, substring).into_result()?;
             context.register_global_function("append", 0, append).into_result()?;
+            context.register_global_function("replace", 0, replace).into_result()?;
             context.register_global_function("regex_capture", 0, regex_capture).into_result()?;
             context.register_global_function("copy_file", 0, copy_file).into_result()?;
         
