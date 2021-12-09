@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env};
+use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir};
 
 use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, property::Attribute};
 use fancy_regex::Regex;
@@ -41,81 +41,12 @@ impl<T: Any, U: Error> IntoResult<JsValue, JsValue> for Result<T, U> {
 pub struct Installation {
     parent: Option<Box<Installation>>,
     id: String,
-    install_script: Option<String>,
-    pre_launch_script: Option<String>,
-    main_class: Option<String>,
-    classpath: Vec<String>,
-    program_arguments: Vec<String>,
-    java_arguments: Vec<String>,
-    policies: Vec<String>,
+    scripts: HashMap<String, String>,
 }
 
 impl Installation {
-    fn get_main_class(&self) -> String {
-        if let Some(main_class_temp) = self.main_class.clone() {
-            Some(main_class_temp)
-        } else if let Some(parent) = &self.parent {
-            Some(parent.get_main_class())
-        } else {
-            None
-        }.unwrap().clone()
-    }
-
-    fn get_install_script(&self) -> &Option<String> {
-        &self.install_script
-    }
-
-    fn get_pre_launch_script(&self) -> &Option<String> {
-        &self.pre_launch_script
-    }
-
-    fn get_classpath(&self) -> Vec<String> {
-        let mut classpath = Vec::new();
-        classpath.append(&mut self.classpath.clone());
-
-        if let Some(parent) = &self.parent {
-            classpath.append(&mut parent.get_classpath());
-        }
-
-        classpath
-    }
-
-    fn get_program_arguments(&self) -> Vec<String> {
-        let mut program_arguments = match &self.parent {
-            Some(parent) => parent.get_program_arguments(),
-            None => Vec::new()
-        };
-        program_arguments.append(&mut self.program_arguments.clone());
-
-        program_arguments
-    }
-
-    fn get_java_arguments(&self) -> Vec<String> {
-        let mut java_arguments = match &self.parent {
-            Some(parent) => parent.get_java_arguments(),
-            None => Vec::new()
-        };
-        java_arguments.append(&mut self.java_arguments.clone());
-
-        java_arguments
-    }
-
-    fn get_policies(&self) -> Result<Vec<String>, Box<dyn Error>> {
-        let mut policies = match &self.parent {
-            Some(parent) => parent.get_policies()?,
-            None => Vec::new()
-        };
-
-        let mut special_params: HashMap<&str, String> = HashMap::new();
-        special_params.insert("files", std::fs::canonicalize(format!("installation/files/{}", self.id))?.to_str().unwrap().to_string());
-        special_params.insert("root", std::fs::canonicalize(env::current_dir()?)?.to_str().unwrap().to_string());
-        special_params.insert("path", env::var("PATH")?);
-
-        policies.append(&mut self.policies.iter().map(|policy| {
-            apply_special_params(&vec![read_to_string(format!("installation/files/{}/{}", self.id, policy)).unwrap()], &special_params)[0].clone()
-        }).collect());
-
-        Ok(policies)
+    fn get_script(&self, id: String) -> Option<&String> {
+        self.scripts.get(&id)
     }
 }
 
@@ -171,7 +102,6 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
     let info_file = format!("{}/info.json", files_directory);
     let info_file = File::open(info_file)?;
     let info_file_json: Value = serde_json::from_reader(BufReader::new(info_file))?;
-    let game_json = &info_file_json["game"];
 
     let parent = match info_file_json["parent"].as_str() {
         Some(parent) => Some(Box::new(parse_installation(parent.to_string())?)),
@@ -180,77 +110,29 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
 
     let id = info_file_json["id"].as_str().ok_or("ID not found")?.to_string();
 
-    let install_script = match game_json["install_script"].as_str() {
-        Some(install_script) => Some(read_to_string(format!("{}/{}", files_directory, install_script.to_string()))?),
-        None => None,
-    };
+    let scripts = match info_file_json["scripts"].as_object() {
+        Some(scripts) => {
+            let mut map = HashMap::new();
 
-    let pre_launch_script = match game_json["pre_launch_script"].as_str() {
-        Some(pre_launch_script) => Some(read_to_string(format!("{}/{}", files_directory, pre_launch_script.to_string()))?),
-        None => None,
-    };
-    
-    let main_class = match game_json["main_class"].as_str() {
-        Some(path) => Some(path.to_string()),
-        None => None
-    };
-
-    let mut classpath = Vec::new();
-    if let Some(classpath_array) = game_json["classpath"].as_array() {
-        for object in classpath_array {
-            let path = object["file"].as_str().unwrap().to_string();
-            if object.get("platforms").is_none() || object["platforms"].as_array().unwrap().contains(&Value::String(OS.into())) {
-                classpath.push(format!("installation/files/{}/{}", id, path));
+            for (id, location) in scripts {
+                map.insert(id.clone(), location.as_str().ok_or("script not string")?.to_string());
             }
-        }
-    }
 
-    let mut special_params: HashMap<&str, String> = HashMap::new();
-    special_params.insert("files", std::fs::canonicalize(format!("installation/files/{}", id))?.to_str().unwrap().to_string());
-    special_params.insert("root", std::fs::canonicalize(env::current_dir()?)?.to_str().unwrap().to_string());
-    special_params.insert("path", env::var("PATH")?);
-
-    let mut program_arguments = Vec::new();
-    if let Some(program_arguments_array) = game_json["program_arguments"].as_array() {
-        for argument in program_arguments_array {
-            program_arguments.push(argument.as_str().unwrap().to_string());
-        }
-    }
-    program_arguments = apply_special_params(&program_arguments, &special_params);
-
-    let mut java_arguments = Vec::new();
-    if let Some(java_arguments_array) = game_json["java_arguments"].as_array() {
-        for argument in java_arguments_array {
-            java_arguments.push(argument.as_str().unwrap().to_string());
-        }
-    }
-    java_arguments = apply_special_params(&java_arguments, &special_params);
-
-    let policies = match game_json["policies"].as_array() {
-        Some(policies) => policies.iter().map(|policy_file| {
-            policy_file.as_str().unwrap().to_string()
-        }).collect(),
-        None => Vec::new()
+            map
+        },
+        None => HashMap::new()
     };
 
     Ok(Installation {
         parent,
         id,
-        install_script,
-        pre_launch_script,
-        main_class,
-        classpath,
-        program_arguments,
-        java_arguments,
-        policies,
+        scripts,
     })
 }
 
-fn download(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue, JsValue> {
-    let installation = context.global_object().get("installation", context)?.as_string().unwrap().as_str().to_string();
+fn download(_: &JsValue, args: &[JsValue], _: &mut Context) -> Result<JsValue, JsValue> {
     let url = args[0].as_string().ok_or("Invalid argument for download")?.to_string();
     let path = args[1].as_string().ok_or("Invalid argument for download")?.to_string();
-    let path = format!("installation/files/{}/{}", installation, path);
 
     let request = match reqwest::blocking::get(url) {
         Ok(response) => response,
@@ -267,10 +149,9 @@ fn download(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsVa
     Ok(JsValue::Null)
 }
 
-fn extract(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue, JsValue> {
-    let installation = context.global_object().get("installation", context)?.as_string().unwrap().as_str().to_string();
-    let zip = format!("installation/files/{}/{}", installation, &args[0].as_string().unwrap().to_string());
-    let location = format!("installation/files/{}/{}", installation, &args[1].as_string().unwrap().to_string());
+fn extract(_: &JsValue, args: &[JsValue], _: &mut Context) -> Result<JsValue, JsValue> {
+    let zip = &args[0].as_string().unwrap().to_string();
+    let location = &args[1].as_string().unwrap().to_string();
     match extract_zip(zip.as_str(), location.as_str()) {
         Ok(_) => Ok(JsValue::Null),
         Err(e) => Err(format!("Error extracting file {} to {}: {:?}", zip, location, e).into()),
@@ -306,9 +187,8 @@ fn extract_zip<'a>(zip: &'a str, out_path: &'a str) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
-fn read(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue, JsValue> {
-    let installation = context.global_object().get("installation", context)?.as_string().unwrap().as_str().to_string();
-    let file = format!("installation/files/{}/{}", installation, args[0].as_string().unwrap().as_str().to_string());
+fn read(_: &JsValue, args: &[JsValue], _: &mut Context) -> Result<JsValue, JsValue> {
+    let file = args[0].as_string().unwrap().as_str().to_string();
     let mut string = String::new();
     File::open(file).unwrap().read_to_string(&mut string).into_result()?;
 
@@ -389,10 +269,9 @@ fn regex_capture(_: &JsValue, args: &[JsValue], _context: &mut Context) -> Resul
     Ok(JsValue::String(JsString::from(capture.as_str())))
 }
 
-fn copy_file(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsValue, JsValue> {
-    let installation = context.global_object().get("installation", context)?.as_string().unwrap().as_str().to_string();
-    let input = format!("installation/files/{}/{}", installation, args[0].as_string().unwrap().as_str());
-    let output = format!("installation/files/{}/{}", installation, args[1].as_string().unwrap().as_str());
+fn copy_file(_: &JsValue, args: &[JsValue], _: &mut Context) -> Result<JsValue, JsValue> {
+    let input = args[0].as_string().unwrap().as_str();
+    let output = args[1].as_string().unwrap().as_str();
 
     std::fs::copy(input, output).unwrap();
 
@@ -400,6 +279,10 @@ fn copy_file(_: &JsValue, args: &[JsValue], context: &mut Context) -> Result<JsV
 }
 
 pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = &installation.parent {
+        install_installation(parent)?;
+    }
+
     let mut context = Context::new();
 
     context.register_global_function("download", 0, download).into_result()?;
@@ -413,16 +296,13 @@ pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn E
 
     context.register_global_property("installation", JsValue::String(JsString::from(installation.id.as_str())), Attribute::all());
     context.register_global_property("os", JsValue::String(OS.into()), Attribute::all());
+    context.register_global_property("files", format!("installation/files/{}", installation.id), Attribute::all());
 
-    if let Some(script) = installation.get_install_script() {
-        match context.eval(script) {
+    if let Some(script) = installation.get_script("install".to_string()) {
+        match context.eval(read_to_string(format!("installation/files/{}/{}", installation.id, script))?) {
             Ok(_) => (),
             Err(error) => return Err(error.display().to_string().into())
         };
-    }
-
-    if let Some(parent) = &installation.parent {
-        install_installation(parent)?;
     }
 
     Ok(())
@@ -450,52 +330,148 @@ fn get_settings_value(settings: &SettingManager, context: &mut Context) -> Resul
     Ok(JsValue::Object(object))
 }
 
-fn run_pre_launch_script(installation: &Installation, settings: &SettingManager) -> Result<(), Box<dyn Error>> {
-    let mut context = Context::new();
+struct LaunchSetup {
+    main_class: Option<String>,
+    classpath: Vec<String>,
+    program_arguments: Vec<String>,
+    java_arguments: Vec<String>,
+    policies: Vec<String>,
+}
 
-    //TODO: make all things use the same context setup
-    context.register_global_function("download", 0, download).into_result()?;
-    context.register_global_function("extract", 0, extract).into_result()?;
-    context.register_global_function("read", 0, read).into_result()?;
-    context.register_global_function("write", 0, write).into_result()?;
-    context.register_global_function("to_json", 0, to_json).into_result()?;
-    context.register_global_function("log", 0, log).into_result()?;
-    context.register_global_function("substring", 0, substring).into_result()?;
-    context.register_global_function("append", 0, append).into_result()?;
-    context.register_global_function("regex_capture", 0, regex_capture).into_result()?;
-    context.register_global_function("copy_file", 0, copy_file).into_result()?;
+impl Default for LaunchSetup {
+    fn default() -> Self {
+        LaunchSetup {
+            main_class: None,
+            classpath: Vec::new(),
+            program_arguments: Vec::new(),
+            java_arguments: Vec::new(),
+            policies: Vec::new(),
+        }
+    }
+}
 
+impl Into<LaunchSetup> for Context {
+    fn into(mut self) -> LaunchSetup {
+        let mut launch_setup = LaunchSetup::default();
+
+        let main_class = self.global_object().get("main_class", &mut self).unwrap().as_string().unwrap().to_string();
+        if !main_class.is_empty() {
+            launch_setup.main_class = Some(main_class);
+        }
+
+        let classpath = self.global_object().get("classpath", &mut self).unwrap().as_object().unwrap();
+        let mut current_index = 0;
+        while current_index >= 0 {
+            match classpath.get(current_index, &mut self).unwrap().as_string() {
+                Some(path) => { 
+                    launch_setup.classpath.push(path.to_string());
+                    current_index += 1;
+                },
+                None => current_index = -1,
+            }
+        }
+
+        let policies = self.global_object().get("policies", &mut self).unwrap().as_object().unwrap();
+        let mut current_index = 0;
+        while current_index >= 0 {
+            match policies.get(current_index, &mut self).unwrap().as_string() {
+                Some(contents) => { 
+                    launch_setup.policies.push(contents.to_string());
+                    current_index += 1;
+                },
+                None => current_index = -1,
+            }
+        }
+
+        let java_arguments = self.global_object().get("java_arguments", &mut self).unwrap().as_object().unwrap();
+        let mut current_index = 0;
+        while current_index >= 0 {
+            match java_arguments.get(current_index, &mut self).unwrap().as_string() {
+                Some(path) => { 
+                    launch_setup.java_arguments.push(path.to_string());
+                    current_index += 1;
+                },
+                None => current_index = -1,
+            }
+        }
+
+        let program_arguments = self.global_object().get("program_arguments", &mut self).unwrap().as_object().unwrap();
+        let mut current_index = 0;
+        while current_index >= 0 {
+            match program_arguments.get(current_index, &mut self).unwrap().as_string() {
+                Some(path) => { 
+                    launch_setup.program_arguments.push(path.to_string());
+                    current_index += 1;
+                },
+                None => current_index = -1,
+            }
+        }
+
+        launch_setup
+    }
+}
+
+fn run_launch_script(installation: &Installation, settings: &SettingManager) -> Result<Context, Box<dyn Error>> {
+    let mut context = match &installation.parent {
+        Some(parent) => run_launch_script(parent, settings)?,
+        None => {
+            let mut context = Context::new();
+
+            context.register_global_function("download", 0, download).into_result()?;
+            context.register_global_function("extract", 0, extract).into_result()?;
+            context.register_global_function("read", 0, read).into_result()?;
+            context.register_global_function("write", 0, write).into_result()?;
+            context.register_global_function("to_json", 0, to_json).into_result()?;
+            context.register_global_function("log", 0, log).into_result()?;
+            context.register_global_function("substring", 0, substring).into_result()?;
+            context.register_global_function("append", 0, append).into_result()?;
+            context.register_global_function("regex_capture", 0, regex_capture).into_result()?;
+            context.register_global_function("copy_file", 0, copy_file).into_result()?;
+        
+            context.register_global_property("os", JsValue::String(OS.into()), Attribute::all());
+            let settings_value = get_settings_value(settings, &mut context)?;
+            context.register_global_property("settings", settings_value, Attribute::all());
+            context.register_global_property("root", current_dir()?.canonicalize()?.to_str().unwrap(), Attribute::all());
+
+            context.register_global_property("main_class", "", Attribute::all());
+            let base_array = context.eval("[]").unwrap();
+            context.register_global_property("classpath", base_array, Attribute::all());
+            let base_array = context.eval("[]").unwrap();
+            context.register_global_property("policies", base_array, Attribute::all());
+            let base_array = context.eval("[]").unwrap();
+            context.register_global_property("java_arguments", base_array, Attribute::all());
+            let base_array = context.eval("[]").unwrap();
+            context.register_global_property("program_arguments", base_array, Attribute::all());
+
+            context
+        },
+    };
+    
     context.register_global_property("installation", JsValue::String(JsString::from(installation.id.as_str())), Attribute::all());
-    context.register_global_property("os", JsValue::String(OS.into()), Attribute::all());
-    let settings_value = get_settings_value(settings, &mut context)?;
-    context.register_global_property("settings", settings_value, Attribute::all());
+    context.register_global_property("files", format!("installation/files/{}", installation.id), Attribute::all());
 
-    if let Some(script) = installation.get_pre_launch_script() {
-        match context.eval(script) {
+    if let Some(script) = installation.get_script("launch".to_string()) {
+        match context.eval(read_to_string(format!("installation/files/{}/{}", installation.id, script))?) {
             Ok(_) => (),
             Err(error) => return Err(error.display().to_string().into())
         };
     }
 
-    if let Some(parent) = &installation.parent {
-        run_pre_launch_script(parent, settings)?;
-    }
-
-    Ok(())
+    Ok(context)
 }
 
 pub fn run_installation(installation: &Installation, arguments: RunArguments, settings: &SettingManager) -> Result<(), Box<dyn Error>> {
-    run_pre_launch_script(installation, settings)?;
+    let launch_setup: LaunchSetup = run_launch_script(installation, settings)?.into();
 
     let policy_text = {
         let mut builder = String::new();
-        for policy in installation.get_policies()? {
+        for policy in launch_setup.policies {
             builder.push_str(&policy);
         }
 
         builder
     };
-
+    
     File::create("policy.policy")?.write_all(policy_text.as_bytes())?;
 
     let mut process = Command::new("java");
@@ -505,7 +481,7 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments, se
     special_params.insert("uuid", arguments.uuid);
     special_params.insert("username", arguments.username);
 
-    process.args(apply_special_params(&installation.get_java_arguments(), &special_params));
+    process.args(apply_special_params(&launch_setup.java_arguments, &special_params));
     process.arg("-Djava.security.manager");
     process.arg("-Djava.security.policy==policy.policy");
     //process.arg("-Djava.security.debug=access");
@@ -516,10 +492,10 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments, se
         "windows" => ";",
         _ => ":"
     };
-    process.args(["-cp", &format!(".{}{}", path_separator, installation.get_classpath().join(path_separator).as_str()), &installation.get_main_class()]);
+    process.args(["-cp", &format!(".{}{}", path_separator, launch_setup.classpath.join(path_separator).as_str()), &launch_setup.main_class.ok_or("no main class")?]);
 
-    process.args(apply_special_params(&installation.get_program_arguments(), &special_params));
-    
+    process.args(apply_special_params(&launch_setup.program_arguments, &special_params));
+
     process.spawn()?;
 
     Ok(())
