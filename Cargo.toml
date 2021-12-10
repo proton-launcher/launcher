@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-authentication = { path = "authentication" }
-game = { path = "game" }
-settings = { path = "settings" }
+authentication = { path = "backend/authentication" }
+game = { path = "backend/game" }
+settings = { path = "backend/settings" }
 
 serde_json = "1.0.72"

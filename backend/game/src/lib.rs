@@ -330,6 +330,7 @@ fn get_settings_value(settings: &SettingManager, context: &mut Context) -> Resul
         object.set(id.as_str(), match value {
             Setting::Boolean(value) => JsValue::Boolean(*value),
             Setting::Integer(integer) => JsValue::Integer(*integer),
+            Setting::String(string) => JsValue::String(string.clone().into()),
             Setting::StringArray(array) => JsValue::String(array.join(",").into()),
             Setting::Null => JsValue::Null,
         }, false, context).unwrap();
@@ -483,7 +484,11 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments, se
     
     File::create("policy.policy")?.write_all(policy_text.as_bytes())?;
 
-    let mut process = Command::new("java");
+    let java_executable = match settings.get_setting("java_executable".into()).unwrap() {
+        Setting::String(string) => string,
+        _ => return Err("invalid java executable (this should never happen)".into()),
+    };
+    let mut process = Command::new(java_executable);
 
     let mut special_params: HashMap<&str, String> = HashMap::new();
     special_params.insert("access_token", arguments.token);

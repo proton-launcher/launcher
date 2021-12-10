@@ -5,6 +5,7 @@ use serde_json::{Value, Map, Number};
 pub enum Setting {
     Boolean(bool),
     Integer(i32),
+    String(String),
     StringArray(Vec<String>),
     Null,
 }
@@ -31,6 +32,7 @@ impl SettingManager {
             map.insert(id.clone(), match value {
                 Setting::Boolean(value) => Value::Bool(*value),
                 Setting::Integer(integer) => Value::Number(Number::from(*integer)),
+                Setting::String(string) => Value::String(string.clone()),
                 Setting::StringArray(strings) => {
                     Value::Array(strings.iter().map(|string| {
                         Value::String(string.clone())
@@ -54,6 +56,7 @@ pub fn initialize_settings() -> Result<SettingManager, Box<dyn Error>> {
     let default_settings = {
         let mut map = HashMap::new();
         map.insert("memory".to_string(), Setting::Integer(1024));
+        map.insert("java_executable".to_string(), Setting::String("java".into()));
 
         map
     };
@@ -72,6 +75,9 @@ pub fn initialize_settings() -> Result<SettingManager, Box<dyn Error>> {
                     } else {
                         Setting::Null
                     }
+                },
+                Value::String(string) => {
+                    Setting::String(string.clone())
                 },
                 Value::Array(array) => {
                     Setting::StringArray(array.iter().map(|value| {

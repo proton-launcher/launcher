@@ -84,6 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         match setting_manager.get_setting_mut(id.clone()).ok_or(format!("Nonexistent setting: {}", id))? {
                             Setting::Boolean(value) => *value = wanted.parse::<bool>()?,
                             Setting::Integer(value) => *value = wanted.parse::<i32>()?,
+                            Setting::String(string) => *string = wanted.parse::<String>()?,
                             Setting::StringArray(array) => *array = wanted.split(",").filter(|value| !value.is_empty()).map(|value| value.to_string()).collect(),
                             Setting::Null => return Err("idk what just happened".into()),
                         };
