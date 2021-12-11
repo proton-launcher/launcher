@@ -58,7 +58,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 match arguments[1] {
                     "install" => {
                         println!("Installing...");
-                        download_installation(arguments[2].to_string())?;
+                        if let Setting::Boolean(value) = state.setting_manager.get_setting("developer_mode".into()).unwrap() {
+                            if !value {
+                                download_installation(arguments[2].to_string())?;
+                            }
+                        }
                         let installation = parse_installation(arguments[2].to_string())?;
                         install_installation(&installation)?;
                         println!("Finished!");
