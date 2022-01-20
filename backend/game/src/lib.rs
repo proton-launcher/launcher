@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir};
+use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string, read_dir}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir};
 
 use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, property::Attribute};
 use fancy_regex::Regex;
@@ -345,6 +345,7 @@ struct LaunchSetup {
     program_arguments: Vec<String>,
     java_arguments: Vec<String>,
     policies: Vec<String>,
+    java_version: Option<u16>,
 }
 
 impl Default for LaunchSetup {
@@ -355,6 +356,7 @@ impl Default for LaunchSetup {
             program_arguments: Vec::new(),
             java_arguments: Vec::new(),
             policies: Vec::new(),
+            java_version: None,
         }
     }
 }
@@ -416,6 +418,11 @@ impl Into<LaunchSetup> for Context {
             }
         }
 
+        let java_version = self.global_object().get("java_version", &mut self).unwrap().as_number().unwrap() as i32;
+        if java_version != -1 {
+            launch_setup.java_version = Some(java_version as u16);
+        }
+
         launch_setup
     }
 }
@@ -452,6 +459,7 @@ fn run_launch_script(installation: &Installation, settings: &SettingManager) -> 
             context.register_global_property("java_arguments", base_array, Attribute::all());
             let base_array = context.eval("[]").unwrap();
             context.register_global_property("program_arguments", base_array, Attribute::all());
+            context.register_global_property("java_version", -1, Attribute::all());
 
             context
         },
@@ -470,6 +478,38 @@ fn run_launch_script(installation: &Installation, settings: &SettingManager) -> 
     Ok(context)
 }
 
+fn find_java_executable(wanted_version: u16) -> Result<String, Box<dyn Error>> {
+    let paths = ["/lib/jvm"];
+    for path in paths {
+        for file in read_dir(path)? {
+            let path = file?.path();
+            if path.is_dir() {
+                let release_file = {
+                    let mut file = path.clone();
+                    file.push("include/classfile_constants.h");
+                    file
+                };
+
+                let mut contents = String::new();
+                File::open(release_file)?.read_to_string(&mut contents)?;
+
+                for line in contents.split("\n") {
+                    if line.starts_with("#define JVM_CLASSFILE_MAJOR_VERSION") { 
+                        let version = line.split(" ").collect::<Vec<&str>>()[2].to_string();
+                        let installation_version = version.parse::<u16>().unwrap() - 44;
+                        if installation_version == wanted_version {
+                            return Ok(format!("{}/bin/java", path.to_str().unwrap().to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    println!("Couldn't find java executable matching version, attempting to use default");
+    Ok("java".to_string())
+}
+
 pub fn run_installation(installation: &Installation, arguments: RunArguments, settings: &SettingManager) -> Result<(), Box<dyn Error>> {
     let launch_setup: LaunchSetup = run_launch_script(installation, settings)?.into();
 
@@ -484,10 +524,15 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments, se
     
     File::create("policy.policy")?.write_all(policy_text.as_bytes())?;
 
-    let java_executable = match settings.get_setting("java_executable".into()).unwrap() {
+    /*let java_executable = match settings.get_setting("java_executable".into()).unwrap() {
         Setting::String(string) => string,
         _ => return Err("invalid java executable (this should never happen)".into()),
+    };*/
+    let java_executable = match launch_setup.java_version {
+        Some(version) => find_java_executable(version)?,
+        None => "java".to_string()
     };
+    println!("{}", java_executable);
     let mut process = Command::new(java_executable);
 
     let mut special_params: HashMap<&str, String> = HashMap::new();

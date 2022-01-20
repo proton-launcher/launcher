@@ -56,7 +56,7 @@ pub fn initialize_settings() -> Result<SettingManager, Box<dyn Error>> {
     let default_settings = {
         let mut map = HashMap::new();
         map.insert("memory".to_string(), Setting::Integer(1024));
-        map.insert("java_executable".to_string(), Setting::String("java".into()));
+        //map.insert("java_executable".to_string(), Setting::String("java".into()));
         map.insert("developer_mode".to_string(), Setting::Boolean(false));
 
         map
