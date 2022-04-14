@@ -486,7 +486,7 @@ fn find_java_executable(wanted_version: u16) -> Result<String, Box<dyn Error>> {
             if path.is_dir() {
                 let release_file = {
                     let mut file = path.clone();
-                    file.push("include/classfile_constants.h");
+                    file.push("release");
                     file
                 };
 
@@ -494,9 +494,16 @@ fn find_java_executable(wanted_version: u16) -> Result<String, Box<dyn Error>> {
                 File::open(release_file)?.read_to_string(&mut contents)?;
 
                 for line in contents.split("\n") {
-                    if line.starts_with("#define JVM_CLASSFILE_MAJOR_VERSION") { 
-                        let version = line.split(" ").collect::<Vec<&str>>()[2].to_string();
-                        let installation_version = version.parse::<u16>().unwrap() - 44;
+                    if line.starts_with("JAVA_VERSION=") { 
+                        let version = &line[line.find("\"").unwrap() + 1..line.rfind("\"").unwrap()];
+                        let split = version.split(".").collect::<Vec<&str>>();
+
+                        let mut checked_index = 0;
+                        if split[0] == "1" {
+                            checked_index = 1;
+                        }
+
+                        let installation_version = split[checked_index].parse::<u16>().unwrap();
                         if installation_version == wanted_version {
                             return Ok(format!("{}/bin/java", path.to_str().unwrap().to_string()));
                         }
@@ -521,8 +528,12 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments, se
 
         builder
     };
+
+    println!("Test2");
     
     File::create("policy.policy")?.write_all(policy_text.as_bytes())?;
+
+    println!("test2");
 
     /*let java_executable = match settings.get_setting("java_executable".into()).unwrap() {
         Setting::String(string) => string,
