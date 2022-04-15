@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string, read_dir}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir};
+use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string, read_dir}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir, thread::{self, sleep}, sync::atomic::{AtomicUsize, Ordering}, time::Duration};
 
 use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, property::Attribute};
 use fancy_regex::Regex;
@@ -130,22 +130,53 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
     })
 }
 
+static THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 fn download(_: &JsValue, args: &[JsValue], _: &mut Context) -> Result<JsValue, JsValue> {
-    let url = args[0].as_string().ok_or("Invalid argument for download")?.to_string();
-    let path = args[1].as_string().ok_or("Invalid argument for download")?.to_string();
-
-    let request = match reqwest::blocking::get(url) {
-        Ok(response) => response,
-        Err(error) => return Err(JsValue::String(JsString::from(error.to_string())))
+    let url = args[0].as_string().ok_or("Invalid argument for download")?.to_string().clone();
+    let path = args[1].as_string().ok_or("Invalid argument for download")?.to_string().clone();
+    let single_thread = if args.len() > 2 {
+        args[2].as_boolean().ok_or("Invalid argument for download")?
+    } else {
+        false
     };
-    let bytes = request.bytes().unwrap();
 
-    let parent_path = Path::new(&path).parent().unwrap();
-    create_dir_all(parent_path).unwrap();
+    if single_thread {
+        let response = match reqwest::blocking::get(url) {
+            Ok(response) => response,
+            Err(error) => return Err(JsValue::String(JsString::from(error.to_string())))
+        };
+        let bytes = response.bytes().unwrap();
+    
+        let parent_path = Path::new(&path).parent().unwrap();
+        create_dir_all(parent_path).unwrap();
+    
+        let mut file = File::create(path).unwrap();
+        file.write_all(&bytes).unwrap();
+    } else {
+        thread::spawn(|| {
+            while THREAD_COUNT.load(Ordering::SeqCst) > 10 {
+                sleep(Duration::from_millis(250));
+            }
 
-    let mut file = File::create(path).unwrap();
-    file.write_all(&bytes).unwrap();
+            THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
 
+            let response = match reqwest::blocking::get(url) {
+                Ok(response) => response,
+                Err(_) => return
+            };
+            let bytes = response.bytes().unwrap();
+        
+            let parent_path = Path::new(&path).parent().unwrap();
+            create_dir_all(parent_path).unwrap();
+        
+            let mut file = File::create(path).unwrap();
+            file.write_all(&bytes).unwrap();
+
+            THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
+        });
+    }
+    
     Ok(JsValue::Null)
 }
 
@@ -313,6 +344,10 @@ pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn E
         };
     }
 
+    while THREAD_COUNT.load(Ordering::Relaxed) > 0 {
+        sleep(Duration::from_millis(500))
+    }
+
     Ok(())
 }
 
@@ -344,7 +379,6 @@ struct LaunchSetup {
     classpath: Vec<String>,
     program_arguments: Vec<String>,
     java_arguments: Vec<String>,
-    policies: Vec<String>,
     java_version: Option<u16>,
 }
 
@@ -355,7 +389,6 @@ impl Default for LaunchSetup {
             classpath: Vec::new(),
             program_arguments: Vec::new(),
             java_arguments: Vec::new(),
-            policies: Vec::new(),
             java_version: None,
         }
     }
@@ -376,18 +409,6 @@ impl Into<LaunchSetup> for Context {
             match classpath.get(current_index, &mut self).unwrap().as_string() {
                 Some(path) => { 
                     launch_setup.classpath.push(path.to_string());
-                    current_index += 1;
-                },
-                None => current_index = -1,
-            }
-        }
-
-        let policies = self.global_object().get("policies", &mut self).unwrap().as_object().unwrap();
-        let mut current_index = 0;
-        while current_index >= 0 {
-            match policies.get(current_index, &mut self).unwrap().as_string() {
-                Some(contents) => { 
-                    launch_setup.policies.push(contents.to_string());
                     current_index += 1;
                 },
                 None => current_index = -1,
@@ -454,8 +475,6 @@ fn run_launch_script(installation: &Installation, settings: &SettingManager) -> 
             let base_array = context.eval("[]").unwrap();
             context.register_global_property("classpath", base_array, Attribute::all());
             let base_array = context.eval("[]").unwrap();
-            context.register_global_property("policies", base_array, Attribute::all());
-            let base_array = context.eval("[]").unwrap();
             context.register_global_property("java_arguments", base_array, Attribute::all());
             let base_array = context.eval("[]").unwrap();
             context.register_global_property("program_arguments", base_array, Attribute::all());
@@ -520,21 +539,6 @@ fn find_java_executable(wanted_version: u16) -> Result<String, Box<dyn Error>> {
 pub fn run_installation(installation: &Installation, arguments: RunArguments, settings: &SettingManager) -> Result<(), Box<dyn Error>> {
     let launch_setup: LaunchSetup = run_launch_script(installation, settings)?.into();
 
-    let policy_text = {
-        let mut builder = String::new();
-        for policy in launch_setup.policies {
-            builder.push_str(&policy);
-        }
-
-        builder
-    };
-
-    println!("Test2");
-    
-    File::create("policy.policy")?.write_all(policy_text.as_bytes())?;
-
-    println!("test2");
-
     /*let java_executable = match settings.get_setting("java_executable".into()).unwrap() {
         Setting::String(string) => string,
         _ => return Err("invalid java executable (this should never happen)".into()),
@@ -543,7 +547,7 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments, se
         Some(version) => find_java_executable(version)?,
         None => "java".to_string()
     };
-    println!("{}", java_executable);
+    
     let mut process = Command::new(java_executable);
 
     let mut special_params: HashMap<&str, String> = HashMap::new();
@@ -552,11 +556,6 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments, se
     special_params.insert("username", arguments.username);
 
     process.args(apply_special_params(&launch_setup.java_arguments, &special_params));
-    process.arg("-Djava.security.manager");
-    process.arg("-Djava.security.policy==policy.policy");
-    //process.arg("-Djava.security.debug=access");
-    process.arg("-DLWJGL_DISABLE_XRANDR=true");
-    process.arg("-Dsecurity_location=security.security");
 
     let path_separator = match OS {
         "windows" => ";",
