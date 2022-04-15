@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string, read_dir}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir, thread::{self, sleep}, sync::atomic::{AtomicUsize, Ordering}, time::Duration};
+use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string, read_dir}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir, thread::{self, sleep}, sync::atomic::{AtomicUsize, Ordering}, time::{Duration, SystemTime}};
 
 use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, property::Attribute};
 use fancy_regex::Regex;
@@ -155,7 +155,7 @@ fn download(_: &JsValue, args: &[JsValue], _: &mut Context) -> Result<JsValue, J
         file.write_all(&bytes).unwrap();
     } else {
         thread::spawn(|| {
-            while THREAD_COUNT.load(Ordering::SeqCst) > 10 {
+            while THREAD_COUNT.load(Ordering::SeqCst) > 25 {
                 sleep(Duration::from_millis(250));
             }
 
@@ -322,6 +322,8 @@ pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn E
         install_installation(parent)?;
     }
 
+    let time = SystemTime::now();
+
     let mut context = Context::new();
 
     context.register_global_function("download", 0, download).into_result()?;
@@ -347,6 +349,8 @@ pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn E
     while THREAD_COUNT.load(Ordering::Relaxed) > 0 {
         sleep(Duration::from_millis(500))
     }
+
+    println!("{}", time.elapsed().unwrap().as_millis());
 
     Ok(())
 }
