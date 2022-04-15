@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string, read_dir}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir, thread::{self, sleep}, sync::atomic::{AtomicUsize, Ordering}, time::{Duration, SystemTime}};
+use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string, read_dir}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::{Command}, env::current_dir, thread::{self, sleep}, sync::atomic::{AtomicUsize, Ordering}, time::{Duration, SystemTime}};
 
 use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, property::Attribute};
 use fancy_regex::Regex;
@@ -569,7 +569,8 @@ pub fn run_installation(installation: &Installation, arguments: RunArguments, se
 
     process.args(apply_special_params(&launch_setup.program_arguments, &special_params));
 
-    process.spawn()?;
+    let mut handle = process.spawn()?;
+    handle.wait()?;
 
     Ok(())
 }

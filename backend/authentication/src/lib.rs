@@ -8,9 +8,10 @@ use serde::{Serialize, Deserialize};
 
 const CLIENT_ID: &'static str = "00000000402b5328";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Profile {
     pub token: String,
+    pub refresh: String,
     pub uuid: String,
     pub username: String,
 }
@@ -98,7 +99,7 @@ fn get_authorization_code_webview() -> Result<String, Box<dyn Error>> {
     Ok(code)
 }
 
-fn get_authorization_token(client: &Client, authorization_code: String) -> Result<String, Box<dyn Error>> {
+fn get_authorization_token(client: &Client, authorization_code: String) -> Result<(String, String), Box<dyn Error>> {
     let response = client.get(format!("https://login.live.com/oauth20_token.srf?client_id={}&code={}&grant_type={}&redirect_uri={}",
                                       CLIENT_ID,
                                       authorization_code,
@@ -106,7 +107,18 @@ fn get_authorization_token(client: &Client, authorization_code: String) -> Resul
                                       "https://login.live.com/oauth20_desktop.srf")
                               ).send()?.into_json()?;
 
-    Ok(response["access_token"].as_str().ok_or(format!("Invalid Authorization Token Response: {:?}", response))?.to_string())
+    Ok((response["access_token"].as_str().ok_or(format!("Invalid Authorization Token Response: {:?}", response))?.to_string(), response["refresh_token"].as_str().ok_or(format!("Invalid Authorization Token Response: {:?}", response))?.to_string()))
+}
+
+fn get_authorization_token_with_refresh(client: &Client, refresh_token: &String) -> Result<(String, String), Box<dyn Error>> {
+    let response = client.get(format!("https://login.live.com/oauth20_token.srf?client_id={}&refresh_token={}&grant_type={}&redirect_uri={}",
+                                      CLIENT_ID,
+                                      refresh_token,
+                                      "refresh_token",
+                                      "https://login.live.com/oauth20_desktop.srf")
+                              ).send()?.into_json()?;
+
+    Ok((response["access_token"].as_str().ok_or(format!("Invalid Authorization Token Response: {:?}", response))?.to_string(), response["refresh_token"].as_str().ok_or(format!("Invalid Authorization Token Response: {:?}", response))?.to_string()))
 }
 
 fn authenticate_xbl(client: &Client, authorization_token: String) -> Result<String, Box<dyn Error>> {
@@ -157,14 +169,51 @@ fn get_minecraft_profile(client: &Client, access_token: &String) -> Result<(Stri
 pub fn authenticate() -> Result<Profile, Box<dyn Error>> {
     let client = Client::new();
     let authorization_code = get_authorization_code_webview()?;
-    let authorization_token = get_authorization_token(&client, authorization_code)?;
+    let (authorization_token, refresh_token) = get_authorization_token(&client, authorization_code)?;
     let xbl_token = authenticate_xbl(&client, authorization_token)?;
     let (xsts_token, user_hash) = authenticate_xsts(&client, xbl_token)?;
     let minecraft_access_token = authenticate_minecraft(&client, user_hash, xsts_token)?;
     let (minecraft_uuid, minecraft_username) = get_minecraft_profile(&client, &minecraft_access_token)?;
     Ok(Profile {
         token: minecraft_access_token,
+        refresh: refresh_token,
         uuid: minecraft_uuid,
         username: minecraft_username,
     })
 }
+
+pub fn refresh(profile: &Profile) -> Result<Profile, Box<dyn Error>> {
+    let client = Client::new();
+    let (authorization_token, refresh_token) = get_authorization_token_with_refresh(&client, &profile.refresh)?;
+    let xbl_token = authenticate_xbl(&client, authorization_token)?;
+    let (xsts_token, user_hash) = authenticate_xsts(&client, xbl_token)?;
+    let minecraft_access_token = authenticate_minecraft(&client, user_hash, xsts_token)?;
+    let (minecraft_uuid, minecraft_username) = get_minecraft_profile(&client, &minecraft_access_token)?;
+
+    Ok(Profile {
+        token: minecraft_access_token,
+        refresh: refresh_token,
+        uuid: minecraft_uuid,
+        username: minecraft_username,
+    })
+}
+
+pub fn validate(access_token: &String) -> Result<bool, Box<dyn Error>> {
+    let client = Client::new();
+
+    let response = client.post("https://authserver.mojang.com/validate")
+        .body(format!(r#"{{"accessToken":"{}"}}"#, access_token))
+        .send()?;
+
+    Ok(response.status().as_u16() == 204)
+}
+
+/*pub fn refresh(access_token: &String) -> Result<String, Box<dyn Error>> {
+    let client = Client::new();
+
+    let response = client.post("https://authserver.mojang.com/refresh")
+        .body(format!(r#"{{"accessToken":"{}","clientToken":"fsdf"}}"#, access_token))
+        .send()?.into_json()?;
+
+    Ok(response["accessToken"].as_str().ok_or(format!("Invalid Minecraft Profile response: {:?}", response))?.to_string())
+}*/
