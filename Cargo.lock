@@ -402,6 +402,7 @@ version = "0.1.0"
 dependencies = [
  "Boa",
  "fancy-regex",
+ "lazy_static",
  "reqwest",
  "serde_json",
  "settings",

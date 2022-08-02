@@ -1,7 +1,8 @@
-use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string, read_dir}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir, thread::{self, sleep}, sync::atomic::{AtomicUsize, Ordering}, time::Duration};
+use std::{any::Any, collections::HashMap, error::Error, fs::{File, create_dir_all, read_to_string, read_dir}, io::{BufReader, Read, Write, copy}, path::{Path, PathBuf}, process::Command, env::current_dir, thread::{self, sleep}, sync::{atomic::{Ordering, AtomicBool}, Mutex}, time::Duration};
 
 use boa::{Context, JsResult, JsString, JsValue, object::{JsObject, Object}, property::Attribute};
 use fancy_regex::Regex;
+use lazy_static::lazy_static;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use settings::{SettingManager, Setting};
@@ -66,35 +67,39 @@ pub fn download_installation(id: String) -> Result<(), Box<dyn  Error>> {
     let files_url = format!("{}/files", base_url);
 
     let parent_folder = format!("installation/files/{}", id);
-    let _ = create_dir_all(&parent_folder);
     
     let client = Client::new();
     
     let files = client.get(files_url).send()?.text()?;
-    let files: Vec<&str> = files.split("\n").collect();
-    for file in files {
-        if file.is_empty() { continue; }
-        let url = format!("{}/{}", base_url, file);
-        let text = client.get(url).send()?.text()?;
-
-        let mut file = File::create(format!("{}/{}", parent_folder, file))?;
-        file.write_all(text.as_bytes())?;
-    }
+    if files != "404: Not Found" {
+        let _ = create_dir_all(&parent_folder);
     
-    let mut info_json = String::new();
+        let files: Vec<&str> = files.split("\n").collect();
+        for file in files {
+            if file.is_empty() { continue; }
+            let url = format!("{}/{}", base_url, file);
+            let text = client.get(url).send()?.text()?;
 
-    let mut file = File::open(format!("{}/info.json", parent_folder))?;
-    file.read_to_string(&mut info_json)?;
+            let mut file = File::create(format!("{}/{}", parent_folder, file))?;
+            file.write_all(text.as_bytes())?;
+        }
+        
+        let mut info_json = String::new();
 
-    let info_json: Value = serde_json::from_str(&info_json)?;
-    match info_json["parent"].as_str() {
-        Some(parent) => {
-            download_installation(parent.to_string())?;
-        },
-        None => (),
-    };
+        let mut file = File::open(format!("{}/info.json", parent_folder))?;
+        file.read_to_string(&mut info_json)?;
 
-    Ok(())
+        let info_json: Value = serde_json::from_str(&info_json)?;
+        match info_json["parent"].as_str() {
+            Some(parent) => {
+                download_installation(parent.to_string())?;
+            },
+            None => (),
+        };
+        Ok(())
+    } else {
+        Err(format!("Installation {} not found.", id).into())
+    }
 }
 
 pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
@@ -130,7 +135,11 @@ pub fn parse_installation(id: String) -> Result<Installation, Box<dyn Error>> {
     })
 }
 
-static THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
+lazy_static! {
+    static ref DOWNLOADS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+}
+
+static DONE: AtomicBool = AtomicBool::new(false);
 
 fn download(_: &JsValue, args: &[JsValue], _: &mut Context) -> Result<JsValue, JsValue> {
     let url = args[0].as_string().ok_or("Invalid argument for download")?.to_string().clone();
@@ -154,27 +163,7 @@ fn download(_: &JsValue, args: &[JsValue], _: &mut Context) -> Result<JsValue, J
         let mut file = File::create(path).unwrap();
         file.write_all(&bytes).unwrap();
     } else {
-        thread::spawn(|| {
-            while THREAD_COUNT.load(Ordering::SeqCst) > 25 {
-                sleep(Duration::from_millis(250));
-            }
-
-            THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
-
-            let response = match reqwest::blocking::get(url) {
-                Ok(response) => response,
-                Err(_) => return
-            };
-            let bytes = response.bytes().unwrap();
-        
-            let parent_path = Path::new(&path).parent().unwrap();
-            create_dir_all(parent_path).unwrap();
-        
-            let mut file = File::create(path).unwrap();
-            file.write_all(&bytes).unwrap();
-
-            THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
-        });
+        DOWNLOADS.lock().unwrap().push((url, path));
     }
     
     Ok(JsValue::Null)
@@ -337,6 +326,38 @@ pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn E
     context.register_global_property("os", JsValue::String(OS.into()), Attribute::all());
     context.register_global_property("files", format!("installation/files/{}", installation.id), Attribute::all());
 
+    for _ in 0..4 {
+        thread::spawn(|| {
+            while !DONE.load(Ordering::SeqCst) || DOWNLOADS.lock().unwrap().len() > 0 {
+                let (url, path) = {
+                    let mut locked = DOWNLOADS.lock().unwrap();
+                    if locked.len() > 0 {
+                        locked.pop().unwrap()
+                    } else {
+                        continue
+                    }
+                };
+
+                let response = match reqwest::blocking::get(url) {
+                    Ok(response) => response,
+                    Err(_) => return
+                };
+                let bytes = response.bytes().unwrap();
+        
+                let parent_path = Path::new(&path).parent().unwrap();
+                create_dir_all(parent_path).unwrap();
+        
+                let mut file = File::create(path).unwrap();
+                file.write_all(&bytes).unwrap();
+            }
+
+            //THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
+
+
+            //THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
+        });
+    }
+
     if let Some(script) = installation.get_script("install".to_string()) {
         match context.eval(read_to_string(format!("installation/files/{}/{}", installation.id, script))?) {
             Ok(_) => (),
@@ -344,7 +365,7 @@ pub fn install_installation(installation: &Installation) -> Result<(), Box<dyn E
         };
     }
 
-    while THREAD_COUNT.load(Ordering::Relaxed) > 0 {
+    while DOWNLOADS.lock().unwrap().len() > 0 {
         sleep(Duration::from_millis(500))
     }
 
