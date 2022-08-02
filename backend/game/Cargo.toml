@@ -12,4 +12,4 @@ serde_json = "1.0.72"
 Boa = "0.13.0"
 reqwest = { version = "0.11.6", features = ["blocking"] }
 zip = "0.5.13"
-fancy-regex = "0.7.1"
+fancy-regex = "0.10.0"

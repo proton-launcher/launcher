@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 web-view = "0.7.3"
-fancy-regex = "0.7.1"
+fancy-regex = "0.10.0"
 reqwest = { version = "0.11.6", features = ["blocking"] }
 serde_json = "1.0.68"
 serde = "1.0.13"

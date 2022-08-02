@@ -1,4 +1,5 @@
 /target
 runtime
+!runtime/.gitkeep
 
 *.class
